@@ -206,7 +206,7 @@ test(`${testSuiteName}: findAll with multiple sites`, async () => {
 });
 
 // This test is for Challenge #1.
-test.skip(`${testSuiteName}: findAll with empty sites`, async () => {
+test(`${testSuiteName}: findAll with empty sites`, async () => {
   const sites = await redisSiteDAO.findAll();
   expect(sites).toEqual([]);
 });
