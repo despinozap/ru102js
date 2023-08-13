@@ -114,20 +114,24 @@ const findAll = async () => {
   const siteIds = await client.zrangeAsync(keyGenerator.getSiteGeoKey(), 0, -1);
   const sites = [];
 
-  for (const siteId of siteIds) {
-    const siteKey = keyGenerator.getSiteHashKey(siteId);
+  // OPTIONAL BONUS CHALLENGE: Optimize with a pipeline.
+  if (siteIds.length > 0) {
+    const pipeline = client.batch();
 
-    /* eslint-disable no-await-in-loop */
-    const siteHash = await client.hgetallAsync(siteKey);
-    /* eslint-enable */
+    for (const siteId of siteIds) {
+      pipeline.hgetall(keyGenerator.getSiteHashKey(siteId));
+    }
 
-    if (siteHash) {
+    // Get all of the site hashes in a single round trip.
+    const siteHashes = await pipeline.execAsync();
+
+    for (const siteHash of siteHashes) {
       // Call remap to remap the flat key/value representation
       // from the Redis hash into the site domain object format.
       sites.push(remap(siteHash));
     }
   }
-
+  // END OPTIONAL BONUS CHALLENGE
   return sites;
 };
 
@@ -177,19 +181,15 @@ const findByGeo = async (lat, lng, radius, radiusUnit) => {
  * @param {'KM' | 'MI'} radiusUnit - The unit that the value of radius is in.
  * @returns {Promise} - a Promise, resolving to an array of site objects.
  */
-const findByGeoWithExcessCapacity = async (lat, lng, radius, radiusUnit) => {
-  /* eslint-disable no-unreachable */
-  // Challenge #5, remove the next line...
-  return [];
-
+const findByGeoWithExcessCapacity = async (lat, lng, radius, radiusUnit) => {  
   const client = redis.getClient();
-
+    
   // Create a pipeline to send multiple commands in one round trip.
   const setOperationsPipeline = client.batch();
-
+    
   // Get sites within the radius and store them in a temporary sorted set.
   const sitesInRadiusSortedSetKey = keyGenerator.getTemporaryKey();
-
+    
   setOperationsPipeline.georadiusAsync(
     keyGenerator.getSiteGeoKey(),
     lng,
@@ -199,23 +199,32 @@ const findByGeoWithExcessCapacity = async (lat, lng, radius, radiusUnit) => {
     'STORE',
     sitesInRadiusSortedSetKey,
   );
-
+    
   // Create a key for a temporary sorted set containing sites that fell
   // within the radius and their current capacities.
   const sitesInRadiusCapacitySortedSetKey = keyGenerator.getTemporaryKey();
-
+    
   // START Challenge #5
+  setOperationsPipeline.zinterstore(
+    sitesInRadiusCapacitySortedSetKey,
+    2,
+    sitesInRadiusSortedSetKey,
+    keyGenerator.getCapacityRankingKey(),
+    'WEIGHTS',
+    0,
+    1,
+  );
   // END Challenge #5
-
+    
   // Expire the temporary sorted sets after 30 seconds, so that we
   // don't leave old keys on the server that we no longer need.
   setOperationsPipeline.expire(sitesInRadiusSortedSetKey, 30);
   setOperationsPipeline.expire(sitesInRadiusCapacitySortedSetKey, 30);
-
+    
   // Execute the set operations commands, we do not need to
   // use the responses.
   await setOperationsPipeline.execAsync();
-
+    
   // Get sites IDs with enough capacity from the temporary
   // sorted set and store them in siteIds.
   const siteIds = await client.zrangebyscoreAsync(
@@ -223,19 +232,19 @@ const findByGeoWithExcessCapacity = async (lat, lng, radius, radiusUnit) => {
     capacityThreshold,
     '+inf',
   );
-
+    
   // Populate array with site details, use pipeline for efficiency.
   const siteHashPipeline = client.batch();
-
+    
   for (const siteId of siteIds) {
     const siteKey = keyGenerator.getSiteHashKey(siteId);
     siteHashPipeline.hgetall(siteKey);
   }
-
+    
   const siteHashes = await siteHashPipeline.execAsync();
-
+    
   const sitesWithCapacity = [];
-
+    
   for (const siteHash of siteHashes) {
     // Ensure a result was found before processing it.
     if (siteHash) {
@@ -246,9 +255,8 @@ const findByGeoWithExcessCapacity = async (lat, lng, radius, radiusUnit) => {
       sitesWithCapacity.push(remap(siteHash));
     }
   }
-
+    
   return sitesWithCapacity;
-  /* eslint-enable */
 };
 
 module.exports = {
